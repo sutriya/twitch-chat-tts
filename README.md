@@ -8,16 +8,20 @@
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python -m piper.download_voices --download-dir voices ru_RU-irina-medium ru_RU-denis-medium
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m piper.download_voices --download-dir voices ru_RU-irina-medium ru_RU-denis-medium
 ```
+
+Активировать окружение (`.venv\Scripts\activate`) не нужно: команды выше вызывают Python из `.venv`
+напрямую. В PowerShell активация часто падает с ошибкой «выполнение сценариев отключено в этой системе».
 
 ## Запуск
 
 1. Впишите свой канал в `config.toml` → `[twitch] channel = "..."`.
-2. Проверьте голос: `python main.py --say "Привет, чат!"`
-3. Запустите: `python main.py` (или `python main.py --channel имя_канала`).
+2. Проверьте голос: `run.bat --say "Привет, чат!"`
+3. Запустите двойным кликом по `run.bat` (или `run.bat --channel имя_канала` из консоли).
+
+Вместо `run.bat` можно запускать напрямую: `.venv\Scripts\python main.py`.
 
 Во время работы в консоли: `s` — пропустить, `c` — очистить очередь, `p` — пауза, `q` — выход (+ Enter).
 
