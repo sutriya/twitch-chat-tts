@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Голоса Piper тяжёлые (~60 МБ каждый) — скачиваются командой из README
+voices/

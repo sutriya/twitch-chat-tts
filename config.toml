@@ -1,0 +1,44 @@
+[twitch]
+# Канал, чат которого озвучиваем (логин из адреса twitch.tv/<логин>)
+channel = ""
+
+[tts]
+voices_dir = "voices"
+# Голоса Piper. Список всех: https://huggingface.co/rhasspy/piper-voices/tree/main/ru/ru_RU
+# Русские: ru_RU-irina-medium, ru_RU-denis-medium, ru_RU-dmitri-medium, ru_RU-ruslan-medium
+voices = ["ru_RU-irina-medium", "ru_RU-denis-medium"]
+# true - каждому зрителю свой голос из списка выше (всегда один и тот же), false - всегда первый
+voice_per_user = true
+speed = 1.1    # 1.0 - обычная скорость, больше - быстрее
+volume = 1.0
+
+[audio]
+# Пусто - устройство по умолчанию. Номер или часть названия из `python main.py --list-devices`.
+# Например, "CABLE Input" для VB-Audio Virtual Cable, чтобы завести звук отдельной дорожкой в OBS.
+output_device = ""
+
+[chat]
+read_names = true
+name_template = "{name} пишет: {text}"
+max_length = 200      # длиннее - обрезается
+max_queue = 10        # если чат быстрее озвучки - старые сообщения выкидываются
+skip_emotes = true    # вырезать смайлы Twitch
+link_word = "ссылка"  # чем заменять ссылки
+# Кто может быть озвучен: everyone, subscriber, vip, moderator, broadcaster
+min_role = "everyone"
+# Если задано (например "!tts"), озвучиваются только сообщения с этим префиксом
+only_with_prefix = ""
+# Сообщения, начинающиеся с этого, не озвучиваются (команды ботов)
+ignore_prefixes = ["!"]
+ignore_users = ["nightbot", "streamelements", "moobot", "streamlabs", "fossabot", "wizebot"]
+# Сообщения с этими словами пропускаются целиком
+banned_words = []
+
+# Замены слов перед озвучкой
+[chat.replacements]
+"лол" = "ха-ха"
+"кек" = "ке-ек"
+"имхо" = "по-моему"
+"gg" = "джи-джи"
+"спс" = "спасибо"
+"пж" = "пожалуйста"
