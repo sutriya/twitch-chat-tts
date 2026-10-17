@@ -1,6 +1,6 @@
 [twitch]
 # Канал, чат которого озвучиваем (логин из адреса twitch.tv/<логин>)
-channel = ""
+channel = "sutriya"
 
 [tts]
 voices_dir = "voices"
@@ -18,7 +18,7 @@ volume = 1.0
 output_device = ""
 
 [chat]
-read_names = true
+read_names = false
 name_template = "{name} пишет: {text}"
 max_length = 200      # длиннее - обрезается
 max_queue = 10        # если чат быстрее озвучки - старые сообщения выкидываются
