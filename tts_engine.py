@@ -1,50 +1,79 @@
-"""Синтез речи (Piper) и воспроизведение звука."""
+"""Синтез речи через Silero и воспроизведение звука."""
 
 import logging
-import zlib
+import urllib.request
 from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
-from piper import PiperVoice, SynthesisConfig
+import torch
+
+from text_normalize import for_cyrillic_tts
 
 log = logging.getLogger(__name__)
 
+SILERO_URL = "https://models.silero.ai/models/tts/ru/{model}.pt"
+# Silero понимает только 5 ступеней скорости
+SILERO_RATES = [(0.75, "x-slow"), (0.92, "slow"), (1.15, "medium"), (1.3, "fast")]
 
-class PiperEngine:
-    """Офлайн-синтез через Piper. Можно загрузить несколько голосов."""
 
-    def __init__(self, cfg: dict):
-        voices_dir = Path(cfg.get("voices_dir", "voices"))
-        names = cfg.get("voices") or ["ru_RU-irina-medium"]
-        self.voices: list[PiperVoice] = []
-        for name in names:
-            path = voices_dir / f"{name}.onnx"
-            if not path.exists():
-                raise FileNotFoundError(
-                    f"Голос {path} не найден. Скачайте его:\n"
-                    f"  python -m piper.download_voices --download-dir {voices_dir} {name}"
-                )
-            self.voices.append(PiperVoice.load(path))
-            log.info("Загружен голос %s", name)
+class SileroEngine:
+    """Нейросетевой синтез Silero (PyTorch, CPU)."""
 
-        self.voice_per_user = cfg.get("voice_per_user", False)
-        self.syn_config = SynthesisConfig(
-            length_scale=1.0 / cfg.get("speed", 1.0),
-            volume=cfg.get("volume", 1.0),
-        )
+    def __init__(self, cfg: dict, base_dir: Path):
+        model_name = cfg.get("model", "v5_6_ru")
+        path = base_dir / cfg.get("models_dir", "models") / f"{model_name}.pt"
+        if not path.exists():
+            _download(SILERO_URL.format(model=model_name), path)
 
-    def _pick_voice(self, user: str) -> PiperVoice:
-        if self.voice_per_user and len(self.voices) > 1:
-            # у одного и того же зрителя всегда один и тот же голос
-            return self.voices[zlib.crc32(user.encode()) % len(self.voices)]
-        return self.voices[0]
+        torch.set_num_threads(cfg.get("threads", 4))
+        self.model = torch.package.PackageImporter(str(path)).load_pickle("tts_models", "model")
+        self.model.to(torch.device("cpu"))
+        log.info("Загружена модель Silero %s", model_name)
 
-    def synthesize(self, text: str, user: str = "") -> tuple[np.ndarray, int]:
-        voice = self._pick_voice(user)
-        chunks = [c.audio_float_array for c in voice.synthesize(text, self.syn_config)]
-        audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
-        return audio.astype(np.float32), voice.config.sample_rate
+        available = list(getattr(self.model, "speakers", []))
+        wanted = cfg.get("speakers", ["xenia"])
+        if wanted == "all":
+            wanted = available
+        missing = [s for s in wanted if s not in available]
+        if missing:
+            log.warning("В модели %s нет голосов: %s", model_name, ", ".join(missing))
+        self.voice_names = [s for s in wanted if s in available]
+        if not self.voice_names:
+            raise ValueError(f"В модели {model_name} нет таких голосов. Доступны: {', '.join(available)}")
+        self.sample_rate = cfg.get("sample_rate", 48000)
+        self.volume = cfg.get("volume", 1.0)
+
+        speed = cfg.get("speed", 1.0)
+        self.rate = next((name for limit, name in SILERO_RATES if speed < limit), "x-fast")
+
+    def synthesize(self, text: str, voice_name: str | None = None) -> tuple[np.ndarray, int]:
+        text = for_cyrillic_tts(text)
+        speaker = voice_name if voice_name in self.voice_names else self.voice_names[0]
+        kwargs = {"speaker": speaker, "sample_rate": self.sample_rate}
+        if self.rate == "medium":
+            kwargs["text"] = text
+        else:
+            escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            kwargs["ssml_text"] = f'<speak><prosody rate="{self.rate}">{escaped}</prosody></speak>'
+
+        try:
+            with torch.no_grad():
+                audio = self.model.apply_tts(**kwargs).numpy()
+        except ValueError:
+            # в тексте не осталось ничего, что Silero умеет произносить
+            log.debug("Silero не смог озвучить: %r", text)
+            return np.zeros(0, dtype=np.float32), self.sample_rate
+        audio = np.clip(audio * self.volume, -1.0, 1.0)
+        return audio.astype(np.float32), self.sample_rate
+
+
+def _download(url: str, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    log.info("Скачиваю %s (один раз, ~150 МБ)...", url)
+    tmp = path.with_suffix(".part")
+    urllib.request.urlretrieve(url, tmp)
+    tmp.replace(path)
 
 
 class Player:

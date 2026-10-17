@@ -4,7 +4,10 @@
     python main.py                      # канал берётся из config.toml
     python main.py --channel имя_канала
     python main.py --say "Проверка связи"  # проверить голос без чата
+    python main.py --say "Привет" --voice all  # послушать все голоса по очереди
     python main.py --list-devices       # список аудиовыходов
+
+Зрители меняют себе голос командой в чате: !голос 2, !голос baya, !голос сброс
 
 Управление во время работы (ввод в консоли + Enter):
     s - пропустить текущее сообщение
@@ -20,19 +23,23 @@ import queue
 import sys
 import threading
 import tomllib
+import warnings
 from pathlib import Path
 
 from text_filter import MessageFilter
-from tts_engine import PiperEngine, Player, list_output_devices
+from tts_engine import Player, SileroEngine, list_output_devices
 from twitch_chat import read_chat
+from voices import VoiceSelector
 
 log = logging.getLogger("tts")
+# код модели Silero сыпет SyntaxWarning на новых версиях Python
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 
 class Speaker:
     """Очередь сообщений + фоновый поток, который синтезирует и проигрывает их по одному."""
 
-    def __init__(self, engine: PiperEngine, player: Player, max_queue: int):
+    def __init__(self, engine, player: Player, max_queue: int):
         self.engine = engine
         self.player = player
         self.queue: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=max_queue)
@@ -40,16 +47,16 @@ class Speaker:
         self.resumed.set()
         threading.Thread(target=self._worker, daemon=True).start()
 
-    def say(self, text: str, user: str = "") -> None:
+    def say(self, text: str, voice: str | None = None) -> None:
         try:
-            self.queue.put_nowait((user, text))
+            self.queue.put_nowait((voice, text))
         except queue.Full:
             # чат слишком быстрый: выкидываем самое старое сообщение
             try:
                 self.queue.get_nowait()
             except queue.Empty:
                 pass
-            self.queue.put_nowait((user, text))
+            self.queue.put_nowait((voice, text))
 
     def skip(self) -> None:
         self.player.stop()
@@ -72,10 +79,10 @@ class Speaker:
 
     def _worker(self) -> None:
         while True:
-            user, text = self.queue.get()
+            voice, text = self.queue.get()
             self.resumed.wait()
             try:
-                audio, sr = self.engine.synthesize(text, user)
+                audio, sr = self.engine.synthesize(text, voice)
                 self.player.play(audio, sr)
             except Exception:
                 log.exception("Не удалось озвучить сообщение")
@@ -97,15 +104,40 @@ def console_controls(speaker: Speaker, stop: threading.Event) -> None:
             return
 
 
-async def run(channel: str, msg_filter: MessageFilter, speaker: Speaker, stop: threading.Event):
+def handle_voice_command(msg, cmd_cfg: dict, selector: VoiceSelector, speaker: Speaker) -> bool:
+    """Обрабатывает "!голос 2" и т.п. Возвращает True, если сообщение было командой."""
+    if not cmd_cfg.get("enabled", True):
+        return False
+    word, _, arg = msg.text.strip().partition(" ")
+    if word.lower() not in [c.lower() for c in cmd_cfg.get("commands", ["!voice", "!голос"])]:
+        return False
+    if not arg.strip():
+        print(f"[{msg.display_name} спрашивает голоса] {selector.describe()}")
+        return True
+    voice = selector.set_voice(msg.user, arg)
+    if voice is None:
+        print(f"[{msg.display_name}: нет голоса {arg.strip()!r}] есть: {selector.describe()}")
+        return True
+    print(f"[{msg.display_name} -> голос {voice}]")
+    if confirm := cmd_cfg.get("confirm_text", ""):
+        speaker.say(confirm.format(name=msg.display_name, voice=voice), voice)
+    return True
+
+
+async def run(channel: str, msg_filter: MessageFilter, speaker: Speaker, selector: VoiceSelector,
+              cmd_cfg: dict, stop: threading.Event):
     async def consume():
         async for msg in read_chat(channel):
+            if msg.user in msg_filter.ignore_users:
+                continue
+            if handle_voice_command(msg, cmd_cfg, selector, speaker):
+                continue
             text = msg_filter.process(msg)
             if text is None:
                 log.debug("пропущено: %s: %s", msg.display_name, msg.text)
                 continue
             print(f"{msg.display_name}: {msg.text}")
-            speaker.say(text, msg.user)
+            speaker.say(text, selector.voice_for(msg.user))
 
     task = asyncio.create_task(consume())
     while not stop.is_set() and not task.done():
@@ -125,6 +157,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("config.toml"))
     parser.add_argument("--channel", help="канал Twitch (перекрывает config.toml)")
     parser.add_argument("--say", help="озвучить текст и выйти (проверка голоса)")
+    parser.add_argument("--voice", help="каким голосом озвучить --say (имя, псевдоним или номер; all - всеми)")
     parser.add_argument("--list-devices", action="store_true", help="показать аудиовыходы")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
@@ -141,16 +174,28 @@ def main() -> None:
 
     cfg = load_config(args.config)
     tts_cfg = cfg.get("tts", {})
-    voices_dir = Path(tts_cfg.get("voices_dir", "voices"))
-    if not voices_dir.is_absolute():
-        tts_cfg["voices_dir"] = str(args.config.parent / voices_dir)
-
-    engine = PiperEngine(tts_cfg)
+    cmd_cfg = cfg.get("voice_command", {})
+    engine = SileroEngine(tts_cfg, args.config.parent)
     player = Player(cfg.get("audio", {}).get("output_device"))
+    selector = VoiceSelector(
+        engine.voice_names,
+        per_user=tts_cfg.get("voice_per_user", False),
+        aliases=cmd_cfg.get("aliases", {}),
+        store_path=args.config.parent / "user_voices.json",
+    )
+    print(f"Голоса: {selector.describe()}")
 
     if args.say:
-        audio, sr = engine.synthesize(args.say)
-        player.play(audio, sr)
+        if args.voice == "all":
+            voices = engine.voice_names
+        else:
+            voices = [selector.resolve(args.voice) if args.voice else engine.voice_names[0]]
+            if voices[0] is None:
+                sys.exit(f"Нет голоса {args.voice!r}")
+        for voice in voices:
+            print(f"-> {voice}")
+            audio, sr = engine.synthesize(args.say, voice)
+            player.play(audio, sr)
         return
 
     channel = args.channel or cfg.get("twitch", {}).get("channel", "")
@@ -164,7 +209,7 @@ def main() -> None:
 
     print("Управление: s - пропуск, c - очистить очередь, p - пауза, q - выход")
     try:
-        asyncio.run(run(channel, msg_filter, speaker, stop))
+        asyncio.run(run(channel, msg_filter, speaker, selector, cmd_cfg, stop))
     except KeyboardInterrupt:
         pass
 

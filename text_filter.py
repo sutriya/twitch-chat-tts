@@ -37,7 +37,7 @@ class MessageFilter:
         self.max_length = cfg.get("max_length", 200)
         self.skip_emotes = cfg.get("skip_emotes", True)
         self.link_word = cfg.get("link_word", "ссылка")
-        self.read_names = cfg.get("read_names", True)
+        self.read_names = cfg.get("read_names", False)
         self.name_template = cfg.get("name_template", "{name} пишет: {text}")
         self.only_with_prefix = cfg.get("only_with_prefix", "")
 
