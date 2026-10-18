@@ -24,6 +24,12 @@ import crash_log
 # до остальных импортов, чтобы в crash.log попали и ошибки загрузки PyTorch и библиотек
 crash_log.install(Path(__file__).with_name("crash.log"), verbose="-v" in sys.argv or "--verbose" in sys.argv)
 
+if "--crash-test" in sys.argv:
+    # проверка диагностики: аварийное падение процесса, как при сбое внутри PyTorch или драйвера
+    import faulthandler
+
+    faulthandler._sigsegv()
+
 import argparse
 import asyncio
 import logging
