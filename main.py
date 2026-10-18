@@ -16,15 +16,21 @@
     q - выход
 """
 
+import sys
+from pathlib import Path
+
+import crash_log
+
+# до остальных импортов, чтобы в crash.log попали и ошибки загрузки PyTorch и библиотек
+crash_log.install(Path(__file__).with_name("crash.log"), verbose="-v" in sys.argv or "--verbose" in sys.argv)
+
 import argparse
 import asyncio
 import logging
 import queue
-import sys
 import threading
 import tomllib
 import warnings
-from pathlib import Path
 
 from text_filter import MessageFilter
 from tts_engine import Player, SileroEngine, list_output_devices
@@ -126,30 +132,47 @@ def handle_voice_command(msg, cmd_cfg: dict, selector: VoiceSelector, speaker: S
 
 async def run(channel: str, msg_filter: MessageFilter, speaker: Speaker, selector: VoiceSelector,
               cmd_cfg: dict, stop: threading.Event):
+    def handle(msg):
+        if msg.user in msg_filter.ignore_users:
+            return
+        if handle_voice_command(msg, cmd_cfg, selector, speaker):
+            return
+        text = msg_filter.process(msg)
+        if text is None:
+            log.debug("пропущено: %s: %s", msg.display_name, msg.text)
+            return
+        print(f"{msg.display_name}: {msg.text}")
+        speaker.say(text, selector.voice_for(msg.user))
+
     async def consume():
         async for msg in read_chat(channel):
-            if msg.user in msg_filter.ignore_users:
-                continue
-            if handle_voice_command(msg, cmd_cfg, selector, speaker):
-                continue
-            text = msg_filter.process(msg)
-            if text is None:
-                log.debug("пропущено: %s: %s", msg.display_name, msg.text)
-                continue
-            print(f"{msg.display_name}: {msg.text}")
-            speaker.say(text, selector.voice_for(msg.user))
+            try:
+                handle(msg)
+            except Exception:
+                # одно кривое сообщение не должно ронять всю озвучку
+                log.exception("Ошибка при обработке сообщения %s: %r", msg.display_name, msg.text)
 
-    task = asyncio.create_task(consume())
-    while not stop.is_set() and not task.done():
-        await asyncio.sleep(0.2)
-    task.cancel()
+    while not stop.is_set():
+        task = asyncio.create_task(consume())
+        while not stop.is_set() and not task.done():
+            await asyncio.sleep(0.2)
+        if task.done() and not task.cancelled() and task.exception():
+            log.error("Чтение чата упало, перезапуск через 3 с", exc_info=task.exception())
+            await asyncio.sleep(3)
+        else:
+            task.cancel()
 
 
 def load_config(path: Path) -> dict:
     if not path.exists():
         sys.exit(f"Не найден файл настроек {path}")
-    with path.open("rb") as f:
-        return tomllib.load(f)
+    # utf-8-sig: Блокнот и PowerShell могут сохранить файл с BOM, tomllib на нём падает
+    text = path.read_bytes().decode("utf-8-sig")
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        log.critical("Ошибка в %s: %s", path, e)
+        sys.exit(1)
 
 
 def main() -> None:
@@ -161,12 +184,6 @@ def main() -> None:
     parser.add_argument("--list-devices", action="store_true", help="показать аудиовыходы")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
-
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
 
     if args.list_devices:
         list_output_devices()

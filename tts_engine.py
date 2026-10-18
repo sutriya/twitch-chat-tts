@@ -72,7 +72,15 @@ def _download(url: str, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     log.info("Скачиваю %s (один раз, ~150 МБ)...", url)
     tmp = path.with_suffix(".part")
-    urllib.request.urlretrieve(url, tmp)
+    try:
+        urllib.request.urlretrieve(url, tmp)
+    except OSError as e:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Не удалось скачать модель {url}: {e}\n"
+            f"Проверьте интернет и название модели или скопируйте файл {path.name} "
+            f"в папку {path.parent} с другого компьютера."
+        ) from e
     tmp.replace(path)
 
 

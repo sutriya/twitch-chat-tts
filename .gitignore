@@ -7,3 +7,5 @@ __pycache__/
 models/
 # Какой голос выбрал себе каждый зритель
 user_voices.json
+# Журнал ошибок
+crash.log*

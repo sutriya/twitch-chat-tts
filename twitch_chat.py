@@ -100,7 +100,11 @@ async def read_chat(channel: str) -> AsyncIterator[ChatMessage]:
                     continue
                 if " RECONNECT" in line:
                     raise ConnectionError("Twitch попросил переподключиться")
-                msg = parse_privmsg(line)
+                try:
+                    msg = parse_privmsg(line)
+                except Exception:
+                    log.exception("Не удалось разобрать строку чата: %r", line)
+                    continue
                 if msg:
                     yield msg
         except (OSError, ConnectionError) as e:
