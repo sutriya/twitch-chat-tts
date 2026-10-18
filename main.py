@@ -49,7 +49,11 @@ warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 
 class Speaker:
-    """Очередь сообщений + фоновый поток, который синтезирует и проигрывает их по одному."""
+    """Очередь сообщений; run() синтезирует и проигрывает их по одному.
+
+    run() должен работать в главном потоке: PyTorch 2.14 на Python 3.15 под Windows
+    падает (access violation) на любой операции с тензорами в неглавном потоке.
+    """
 
     def __init__(self, engine, player: Player, max_queue: int):
         self.engine = engine
@@ -57,7 +61,6 @@ class Speaker:
         self.queue: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=max_queue)
         self.resumed = threading.Event()
         self.resumed.set()
-        threading.Thread(target=self._worker, daemon=True).start()
 
     def say(self, text: str, voice: str | None = None) -> None:
         try:
@@ -89,10 +92,15 @@ class Speaker:
         self.resumed.set()
         return False
 
-    def _worker(self) -> None:
-        while True:
-            voice, text = self.queue.get()
-            self.resumed.wait()
+    def run(self, stop: threading.Event) -> None:
+        while not stop.is_set():
+            try:
+                voice, text = self.queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            while not self.resumed.wait(timeout=0.2):
+                if stop.is_set():
+                    return
             try:
                 audio, sr = self.engine.synthesize(text, voice)
                 self.player.play(audio, sr)
@@ -230,11 +238,20 @@ def main() -> None:
     stop = threading.Event()
     threading.Thread(target=console_controls, args=(speaker, stop), daemon=True).start()
 
+    def chat_thread():
+        try:
+            asyncio.run(run(channel, msg_filter, speaker, selector, cmd_cfg, stop))
+        finally:
+            stop.set()
+
+    # чат читается в фоне, а синтез идёт в главном потоке (см. Speaker)
+    threading.Thread(target=chat_thread, name="chat", daemon=True).start()
+
     print("Управление: s - пропуск, c - очистить очередь, p - пауза, q - выход")
     try:
-        asyncio.run(run(channel, msg_filter, speaker, selector, cmd_cfg, stop))
+        speaker.run(stop)
     except KeyboardInterrupt:
-        pass
+        stop.set()
 
 
 if __name__ == "__main__":

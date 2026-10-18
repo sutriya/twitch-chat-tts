@@ -92,7 +92,10 @@ Windows и PyTorch). Ошибка в одном сообщении чата не
 
 - `DLL load failed` / `WinError 126` — нет Microsoft Visual C++ Redistributable (x64), без него не грузится PyTorch.
 - Папка `.venv` скопирована с другого ПК — так не работает, создайте окружение заново (см. «Установка»).
-- `No module named 'tomllib'` — нужен Python 3.11 или новее.
+- `No module named 'tomllib'` — нужен Python 3.11 или новее. Проверено на 3.12 и 3.15.
+- `access violation` в `prepare_tts_model_input` на Python 3.15 — ошибка PyTorch 2.14: на 3.15 он падает
+  на любой работе с тензорами не в главном потоке. В текущей версии синтез идёт в главном потоке,
+  поэтому достаточно обновиться (`git pull`).
 - Не скачивается модель — нет интернета; скопируйте папку `models` с другого компьютера.
 - `PortAudioError` / `No such device` — в `[audio] output_device` указано устройство, которого нет на этом ПК.
 
