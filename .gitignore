@@ -9,3 +9,4 @@ models/
 user_voices.json
 # Журнал ошибок
 crash.log*
+crash_native.tmp
