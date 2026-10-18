@@ -9,7 +9,11 @@ from typing import AsyncIterator
 log = logging.getLogger(__name__)
 
 IRC_HOST = "irc.chat.twitch.tv"
-IRC_PORT = 6667
+IRC_PORT = 6697  # TLS; открытый 6667 провайдеры и роутеры чаще обрывают
+USE_TLS = True
+CONNECT_TIMEOUT = 15  # с на подключение
+PING_INTERVAL = 20  # если столько секунд ничего не пришло, шлём свой PING
+PONG_TIMEOUT = 10  # и ждём ответ; нет ответа - переподключаемся
 
 
 @dataclass
@@ -73,13 +77,34 @@ def parse_privmsg(line: str) -> ChatMessage | None:
     )
 
 
+async def _readline(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bytes:
+    """Читает строку; если сервер молчит, проверяет связь своим PING.
+
+    Без этого «тихо умершее» соединение (роутер, Wi-Fi, сон сети) не даёт ни ошибки,
+    ни конца потока, и чтение чата зависает навсегда.
+    """
+    try:
+        return await asyncio.wait_for(reader.readline(), PING_INTERVAL)
+    except asyncio.TimeoutError:
+        log.debug("Чат молчит %d с, проверяем связь", PING_INTERVAL)
+        writer.write(b"PING :keepalive\r\n")
+        await writer.drain()
+    try:
+        return await asyncio.wait_for(reader.readline(), PONG_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise ConnectionError(f"Twitch не ответил на PING за {PONG_TIMEOUT} с") from None
+
+
 async def read_chat(channel: str) -> AsyncIterator[ChatMessage]:
     """Бесконечно читает чат канала, переподключаясь при обрывах."""
     channel = channel.lower().lstrip("#")
     delay = 1
     while True:
+        writer = None
         try:
-            reader, writer = await asyncio.open_connection(IRC_HOST, IRC_PORT)
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(IRC_HOST, IRC_PORT, ssl=USE_TLS or None), CONNECT_TIMEOUT
+            )
             nick = f"justinfan{random.randint(10000, 99999)}"  # анонимный ник Twitch
             writer.write(
                 b"CAP REQ :twitch.tv/tags twitch.tv/commands\r\n"
@@ -90,11 +115,12 @@ async def read_chat(channel: str) -> AsyncIterator[ChatMessage]:
             delay = 1
 
             while True:
-                raw = await reader.readline()
+                raw = await _readline(reader, writer)
                 if not raw:
                     raise ConnectionError("соединение закрыто сервером")
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                 if line.startswith("PING"):
+                    log.debug("PING от Twitch, отвечаем")
                     writer.write(line.replace("PING", "PONG", 1).encode() + b"\r\n")
                     await writer.drain()
                     continue
@@ -107,7 +133,11 @@ async def read_chat(channel: str) -> AsyncIterator[ChatMessage]:
                     continue
                 if msg:
                     yield msg
-        except (OSError, ConnectionError) as e:
-            log.warning("Обрыв соединения (%s), переподключение через %d с", e, delay)
+        except (OSError, ConnectionError, asyncio.TimeoutError, ValueError) as e:
+            # ValueError - слишком длинная строка от сервера (readline)
+            log.warning("Обрыв соединения (%s), переподключение через %d с", str(e) or type(e).__name__, delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
+        finally:
+            if writer is not None:
+                writer.close()

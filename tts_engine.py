@@ -1,6 +1,7 @@
 """Синтез речи через Silero и воспроизведение звука."""
 
 import logging
+import time
 import urllib.request
 from pathlib import Path
 
@@ -15,6 +16,7 @@ log = logging.getLogger(__name__)
 SILERO_URL = "https://models.silero.ai/models/tts/ru/{model}.pt"
 # Silero понимает только 5 ступеней скорости
 SILERO_RATES = [(0.75, "x-slow"), (0.92, "slow"), (1.15, "medium"), (1.3, "fast")]
+PLAY_GRACE = 3.0  # с сверх длины звука, после которых считаем, что воспроизведение зависло
 
 
 class SileroEngine:
@@ -95,7 +97,14 @@ class Player:
         if audio.size == 0:
             return
         sd.play(audio, sample_rate, device=self.device)
-        sd.wait()
+        # sd.wait() без таймаута: если аудиодрайвер завис, встала бы вся озвучка
+        deadline = time.monotonic() + len(audio) / sample_rate + PLAY_GRACE
+        while sd.get_stream().active:
+            if time.monotonic() > deadline:
+                log.warning("Звук не доиграл вовремя, аудиоустройство зависло? Останавливаем")
+                sd.stop()
+                break
+            time.sleep(0.05)
 
     def stop(self) -> None:
         sd.stop()

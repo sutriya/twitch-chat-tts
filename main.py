@@ -44,6 +44,21 @@ from twitch_chat import read_chat
 from voices import VoiceSelector
 
 log = logging.getLogger("tts")
+
+
+def disable_console_quick_edit() -> None:
+    """Щелчок мышью в окне консоли Windows включает выделение текста и замораживает
+    весь вывод, а с ним и скрипт, пока не нажать Esc. Отключаем это для своего окна."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+    mode = ctypes.c_uint32()
+    if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        ENABLE_QUICK_EDIT_MODE, ENABLE_EXTENDED_FLAGS = 0x0040, 0x0080
+        kernel32.SetConsoleMode(handle, (mode.value & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS)
 # код модели Silero сыпет SyntaxWarning на новых версиях Python
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 
@@ -247,6 +262,7 @@ def main() -> None:
     # чат читается в фоне, а синтез идёт в главном потоке (см. Speaker)
     threading.Thread(target=chat_thread, name="chat", daemon=True).start()
 
+    disable_console_quick_edit()
     print("Управление: s - пропуск, c - очистить очередь, p - пауза, q - выход")
     try:
         speaker.run(stop)
